@@ -1,0 +1,259 @@
+import numpy as np
+import pandas as pd
+import pyreadstat
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, classification_report
+
+from xgboost import XGBClassifier
+
+
+# 1. Load SPSS .sav
+
+path = r"C:\Users\julyt\Downloads\GSS_2016_2024_subset.sav"
+df, meta = pyreadstat.read_sav(path, apply_value_formats=False)
+
+print(df.shape)
+print(df.columns.tolist())
+
+
+
+# 2. Treat GSS negative codes as missing
+#    (GSS uses -100..-40 etc for different missing reasons)
+
+def set_negative_to_nan(s: pd.Series) -> pd.Series:
+    # Works for numeric columns; keeps legitimate 0 for educ, but converts <0 to NaN
+    s = pd.to_numeric(s, errors="coerce")
+    s[s < 0] = np.nan
+    return s
+
+
+cols_to_clean = ["educ", "age", "income", "immjobs", "immameco", "letin1", "amcitizn"]
+for c in cols_to_clean:
+    if c in df.columns:
+        df[c] = set_negative_to_nan(df[c])
+
+
+
+# 3. Keep waves (1996, 2004, 2014, 2022, 2024)
+
+df = df[df["year"].isin([1996, 2004, 2014, 2022, 2024])].copy()
+
+# Make some variables categorical
+for c in ["region", "race", "sex", "year"]:
+    if c in df.columns:
+        df[c] = df[c].astype("category")
+
+
+
+# 4. Recode outcomes 
+# immjobs_anti: 1/2 -> 1 (anti), 3/4/5 -> 0
+df["immjobs_anti"] = np.select(
+    [df["immjobs"].isin([1, 2]), df["immjobs"].isin([3, 4, 5])],
+    [1, 0],
+    default=np.nan
+)
+
+# immameco_anti: 4/5 -> 1 (anti), 1/2/3 -> 0
+df["immameco_anti"] = np.select(
+    [df["immameco"].isin([4, 5]), df["immameco"].isin([1, 2, 3])],
+    [1, 0],
+    default=np.nan
+)
+
+# Example: letin_restrict: 4/5 -> 1 (restrict), 1/2/3 -> 0
+if "letin1" in df.columns:
+    df["letin_restrict"] = np.select(
+        [df["letin1"].isin([4, 5]), df["letin1"].isin([1, 2, 3])],
+        [1, 0],
+        default=np.nan
+    )
+
+# Example: cit_attach from amcitizn: 1/2 -> 1, 3/4/5 -> 0
+if "amcitizn" in df.columns:
+    df["cit_attach"] = np.select(
+        [df["amcitizn"].isin([1, 2]), df["amcitizn"].isin([3, 4, 5])],
+        [1, 0],
+        default=np.nan
+    )
+
+
+# 5. run XGBoost
+
+def run_xgb(df_in: pd.DataFrame, target: str, features: list):
+    dat = df_in[features + [target]].dropna().copy()
+
+    X = dat[features]
+    y = dat[target].astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42, stratify=y
+    )
+
+    cat_cols = [c for c in features if str(X[c].dtype) == "category" or X[c].dtype == object]
+    num_cols = [c for c in features if c not in cat_cols]
+
+    pre = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+            ("num", "passthrough", num_cols),
+        ]
+    )
+
+    Xtr = pre.fit_transform(X_train)
+    Xte = pre.transform(X_test)
+
+    model = XGBClassifier(
+        n_estimators=2000,
+        learning_rate=0.03,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        objective="binary:logistic",
+        eval_metric="auc",
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    # Early stopping on test set 
+    model.fit(
+        Xtr, y_train,
+        eval_set=[(Xte, y_test)],
+        verbose=False
+    )
+
+    prob = model.predict_proba(Xte)[:, 1]
+    pred = (prob >= 0.50).astype(int)
+
+    auc = roc_auc_score(y_test, prob)
+    acc = accuracy_score(y_test, pred)
+    cm = confusion_matrix(y_test, pred)
+
+    print(f"\n=== XGBoost results: {target} ===")
+    print("N used:", dat.shape[0])
+    print("AUC:", round(auc, 3))
+    print("Accuracy:", round(acc, 3))
+    print("Confusion matrix:\n", cm)
+    print("\nClassification report:\n", classification_report(y_test, pred, digits=3))
+
+    # Feature importance (top 15 by gain)
+    feature_names = pre.get_feature_names_out()
+    importances = model.feature_importances_
+    imp = pd.DataFrame({"feature": feature_names, "gain": importances}).sort_values("gain", ascending=False)
+    print("\nTop 15 features (gain):")
+    print(imp.head(15).to_string(index=False))
+
+    return model, pre, imp
+
+
+# 6. target + feature set
+features = ["educ", "age", "income", "sex", "race", "region", "year"]
+
+# Example 1: immigrants take jobs away (anti)
+model_jobs, pre_jobs, imp_jobs = run_xgb(df, target="immjobs_anti", features=features)
+
+# Example 2: immigrants not good for economy (anti)
+model_eco, pre_eco, imp_eco = run_xgb(df, target="immameco_anti", features=features)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    roc_auc_score, accuracy_score, balanced_accuracy_score,
+    confusion_matrix, classification_report
+)
+
+def eval_pipe(X, y, pipe, title):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, stratify=y, random_state=42
+    )
+
+    pipe.fit(X_train, y_train)
+    proba = pipe.predict_proba(X_test)[:, 1]
+    pred = (proba >= 0.5).astype(int)
+
+    # Baselines
+    base_rate = y_test.mean()
+    majority_acc = max(base_rate, 1 - base_rate)
+
+    print(f"\n=== {title} ===")
+    print(f"N used: {len(y)} | Test base rate (y=1): {base_rate:.3f}")
+    print(f"Majority-class accuracy baseline: {majority_acc:.3f}")
+    print(f"AUC: {roc_auc_score(y_test, proba):.3f}")
+    print(f"Accuracy: {accuracy_score(y_test, pred):.3f}")
+    print(f"Balanced accuracy: {balanced_accuracy_score(y_test, pred):.3f}")
+    print("Confusion matrix:\n", confusion_matrix(y_test, pred))
+    print("\nClassification report:\n", classification_report(y_test, pred))
+
+    return {
+        "N": len(y),
+        "base_rate_test": base_rate,
+        "auc": roc_auc_score(y_test, proba),
+        "acc": accuracy_score(y_test, pred),
+        "bacc": balanced_accuracy_score(y_test, pred),
+    }
+
+#  predictors (match what's in XGBoost) ---
+cat_cols = ["year", "region", "race", "sex"]
+num_cols = ["educ", "age", "income"]
+
+
+preprocess = ColumnTransformer(
+    transformers=[
+        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+        ("num", "passthrough", num_cols),
+    ]
+)
+
+logit_pipe = Pipeline([
+    ("prep", preprocess),
+    ("clf", LogisticRegression(max_iter=5000, class_weight="balanced"))
+])
+
+def run_comparison(df, outcome_col):
+    use_cols = cat_cols + num_cols + [outcome_col]
+    d = df[use_cols].dropna().copy()
+
+    X = d[cat_cols + num_cols]
+    y = d[outcome_col].astype(int)
+
+    return eval_pipe(X, y, logit_pipe, title=f"Logistic regression baseline — {outcome_col}")
+
+# Run for both outcomes
+res_jobs = run_comparison(df, "immjobs_anti")
+res_eco  = run_comparison(df, "immameco_anti")
+
+print("\nSummary (logistic regression):")
+print(pd.DataFrame([res_jobs, res_eco], index=["immjobs_anti","immameco_anti"]))
+
