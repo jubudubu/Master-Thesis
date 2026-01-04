@@ -10,7 +10,7 @@ library(knitr)        # kable() for LaTeX tables
 library(forcats)      # factor helpers
 
 # 1. Load and prepare data 
-gss <- read_sav("C:/Users/julyt/Downloads/GSS_2016_2024_subset.sav")
+gss <- read_sav("C:/Users/GSS_subset.sav")
 
 gss_hier <- gss 
   filter(year c(1996, 2004, 2014, 2022, 2024))
@@ -856,4 +856,5 @@ ggplot(or_edu, aes(x = outcome, y = OR, color = type)) +
     title = "Education effects (within and between regions) across outcomes"
   ) +
   theme_thesis()
+
 
