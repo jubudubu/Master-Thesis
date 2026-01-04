@@ -12,7 +12,7 @@ from xgboost import XGBClassifier
 
 # 1. Load SPSS .sav
 
-path = r"C:\Users\julyt\Downloads\GSS_2016_2024_subset.sav"
+path = r"C:/Users/GSS_subset.sav"
 df, meta = pyreadstat.read_sav(path, apply_value_formats=False)
 
 print(df.shape)
@@ -256,4 +256,5 @@ res_eco  = run_comparison(df, "immameco_anti")
 
 print("\nSummary (logistic regression):")
 print(pd.DataFrame([res_jobs, res_eco], index=["immjobs_anti","immameco_anti"]))
+
 
